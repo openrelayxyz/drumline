@@ -2,10 +2,16 @@
 // goroutines in lock step, within an established threshold.
 package drumline
 
+import (
+  "runtime"
+)
+
 // Drumline ensures that goroutines stay in step within an acceptable
 // threshold.
 type Drumline struct {
   channels map[int]chan struct{}
+  resets map[int]chan struct{}
+  resetCh chan struct{}
   buffer int
   started bool
   quit chan struct{}
@@ -16,6 +22,8 @@ type Drumline struct {
 func NewDrumline(buffer int) *Drumline {
   return &Drumline{
     channels: make(map[int]chan struct{}),
+    resets: make(map[int]chan struct{}),
+    resetCh: make(chan struct{}),
     buffer: buffer,
     quit: make(chan struct{}),
   }
@@ -24,6 +32,7 @@ func NewDrumline(buffer int) *Drumline {
 // Add starts tracking a new goroutine in the Drumline
 func (dl *Drumline) Add(i int) {
   dl.channels[i] = make(chan struct{}, dl.buffer)
+  dl.resets[i] = make(chan struct{})
   if !dl.started {
     dl.started = true
     go func() {
@@ -31,6 +40,14 @@ func (dl *Drumline) Add(i int) {
         for _, ch := range dl.channels {
           select {
           case <-ch:
+          case <-dl.resetCh:
+            for _, v := range dl.resets {
+              select {
+              case v <- struct{}{}:
+              default:
+              }
+              runtime.Gosched()
+            }
           case <-dl.quit:
             return
           }
@@ -44,7 +61,22 @@ func (dl *Drumline) Add(i int) {
 // ahead of the rest of the drumline, this will block until other goroutines
 // start to catch up.
 func (dl *Drumline) Step(i int) {
-  dl.channels[i] <- struct{}{}
+  select {
+  case dl.channels[i] <- struct{}{}:
+  case <- dl.resets[i]:
+  }
+}
+
+
+// Reset resynchronizes the drumline, so that all goroutines are at step 0
+func (dl *Drumline) Reset() {
+  for i := range dl.channels {
+    dl.channels[i] = make(chan struct{}, dl.buffer)
+  }
+  select {
+  case dl.resetCh <- struct{}{}:
+  default:
+  }
 }
 
 // Close cleans up the drumline. Close() must be called when a Drumline is
