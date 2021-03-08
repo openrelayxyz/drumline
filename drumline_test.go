@@ -50,9 +50,12 @@ func TestReset(t *testing.T) {
   time.Sleep(100 * time.Millisecond)
   if x { t.Errorf("Progress should have been limited (x)") }
   if y { t.Errorf("Progress should have been limited (y)") }
-  dl.Reset()
+  <-dl.Reset(0)
   time.Sleep(100 * time.Millisecond)
   if !x { t.Errorf("Progress should have been able to proceed (x)") }
   if !y { t.Errorf("Progress should have been able to proceed (y)") }
   dl.Close()
+  if x := dl.Reset(0); x != nil {
+    t.Errorf("Reset on closed drumline should return nil channel, got %v", x)
+  }
 }

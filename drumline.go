@@ -3,6 +3,7 @@
 package drumline
 
 import (
+  "time"
   "runtime"
 )
 
@@ -14,6 +15,7 @@ type Drumline struct {
   resetCh chan struct{}
   buffer int
   started bool
+  closed bool
   quit chan struct{}
 }
 
@@ -68,20 +70,35 @@ func (dl *Drumline) Step(i int) {
 }
 
 
-// Reset resynchronizes the drumline, so that all goroutines are at step 0
-func (dl *Drumline) Reset() {
-  for i := range dl.channels {
-    dl.channels[i] = make(chan struct{}, dl.buffer)
-  }
-  select {
-  case dl.resetCh <- struct{}{}:
-  default:
-  }
+// Reset returns a channel that will produce a message after the specified
+// duration. If the message is consumed, the drumline will reset; if the
+// message is not consumed the reset will expire. If the drumline is closed,
+// the returned channel will be nil, and will never produce a message.
+func (dl *Drumline) Reset(d time.Duration) chan time.Time {
+  if dl.closed { return nil }
+  ret := make(chan time.Time)
+  go func(ret chan time.Time) {
+    t := <- time.After(d)
+    select {
+    case ret <- t:
+    default:
+      return
+    }
+    for i := range dl.channels {
+      dl.channels[i] = make(chan struct{}, dl.buffer)
+    }
+    select {
+    case dl.resetCh <- struct{}{}:
+    default:
+    }
+  }(ret)
+  return ret
 }
 
 // Close cleans up the drumline. Close() must be called when a Drumline is
 // discarded, or it will not be garbage collected.
 func (dl *Drumline) Close() {
+  dl.closed = true
   dl.quit <- struct{}{}
   close(dl.quit)
 }
