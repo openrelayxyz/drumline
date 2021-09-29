@@ -5,6 +5,7 @@ package drumline
 import (
   "time"
   "runtime"
+  "sync"
 )
 
 // Drumline ensures that goroutines stay in step within an acceptable
@@ -12,11 +13,14 @@ import (
 type Drumline struct {
   channels map[int]chan struct{}
   resets map[int]chan struct{}
+  done map[int]struct{}
   resetCh chan struct{}
+  doneCh chan int
   buffer int
   started bool
   closed bool
   quit chan struct{}
+  lock sync.RWMutex
 }
 
 // NewDrumline creates a drumline. `buffer` indicates the maximum number of
@@ -26,6 +30,8 @@ func NewDrumline(buffer int) *Drumline {
     channels: make(map[int]chan struct{}),
     resets: make(map[int]chan struct{}),
     resetCh: make(chan struct{}),
+    doneCh: make(chan int),
+    done: make(map[int]struct{}),
     buffer: buffer,
     quit: make(chan struct{}),
   }
@@ -42,6 +48,16 @@ func (dl *Drumline) Add(i int) {
         for _, ch := range dl.channels {
           select {
           case <-ch:
+          case thread := <-dl.doneCh:
+            dl.lock.Lock()
+            delete(dl.channels, thread)
+            delete(dl.resets, thread)
+            dl.done[thread] = struct{}{}
+            dl.lock.Unlock()
+            if len(dl.channels) == 0 {
+              <-dl.quit
+              return
+            }
           case <-dl.resetCh:
             for _, v := range dl.resets {
               select {
@@ -59,13 +75,25 @@ func (dl *Drumline) Add(i int) {
   }
 }
 
+func (dl *Drumline) Done(i int) {
+  dl.doneCh <- i
+}
+
 // Step advances a specific goroutine. If this would put that goroutine too far
 // ahead of the rest of the drumline, this will block until other goroutines
 // start to catch up.
 func (dl *Drumline) Step(i int) {
+  dl.lock.RLock()
+  if _, ok := dl.done[i]; ok {
+    dl.lock.RUnlock()
+    return
+  }
+  ch := dl.channels[i]
+  rch := dl.resets[i]
+  dl.lock.RUnlock()
   select {
-  case dl.channels[i] <- struct{}{}:
-  case <- dl.resets[i]:
+  case ch <- struct{}{}:
+  case <- rch:
   }
 }
 
@@ -85,7 +113,9 @@ func (dl *Drumline) Reset(d time.Duration) chan time.Time {
       return
     }
     for i := range dl.channels {
+      dl.lock.Lock()
       dl.channels[i] = make(chan struct{}, dl.buffer)
+      dl.lock.Unlock()
     }
     select {
     case dl.resetCh <- struct{}{}:
