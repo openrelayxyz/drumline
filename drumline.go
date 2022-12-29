@@ -6,6 +6,8 @@ import (
   "time"
   "runtime"
   "sync"
+  "sync/atomic"
+  "math"
 )
 
 // Drumline ensures that goroutines stay in step within an acceptable
@@ -15,6 +17,10 @@ type Drumline struct {
   resets map[int]chan struct{}
   done map[int]struct{}
   resetCh chan struct{}
+  scales map[int]int64
+  minscale int64
+  stepSize map[int]int64
+  steps map[int]*int64
   doneCh chan int
   buffer int
   started bool
@@ -29,6 +35,10 @@ func NewDrumline(buffer int) *Drumline {
   return &Drumline{
     channels: make(map[int]chan struct{}),
     resets: make(map[int]chan struct{}),
+    scales: make(map[int]int64),
+    minscale: math.MaxInt64,
+    stepSize: make(map[int]int64),
+    steps: make(map[int]*int64),
     resetCh: make(chan struct{}),
     doneCh: make(chan int),
     done: make(map[int]struct{}),
@@ -37,10 +47,25 @@ func NewDrumline(buffer int) *Drumline {
   }
 }
 
-// Add starts tracking a new goroutine in the Drumline
 func (dl *Drumline) Add(i int) {
+  dl.AddScale(i, 1)
+}
+
+// Add starts tracking a new goroutine in the Drumline
+func (dl *Drumline) AddScale(i int, scale int64) {
+  dl.lock.Lock()
   dl.channels[i] = make(chan struct{}, dl.buffer)
   dl.resets[i] = make(chan struct{})
+  dl.scales[i] = scale
+  dl.steps[i] = new(int64)
+  if scale < dl.minscale {
+    dl.minscale = scale
+    for j, s := range dl.scales {
+      dl.stepSize[j] = s / dl.minscale
+    }
+  }
+  dl.stepSize[i] = scale / dl.minscale
+  dl.lock.Unlock()
   if !dl.started {
     dl.started = true
     go func() {
@@ -88,6 +113,12 @@ func (dl *Drumline) Step(i int) {
     dl.lock.RUnlock()
     return
   }
+  atomic.AddInt64(dl.steps[i], 1)
+  if *dl.steps[i] < dl.stepSize[i] {
+    dl.lock.RUnlock()
+    return
+  }
+  *dl.steps[i] = 0
   ch := dl.channels[i]
   rch := dl.resets[i]
   dl.lock.RUnlock()
