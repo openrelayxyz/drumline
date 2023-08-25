@@ -53,6 +53,9 @@ func (dl *Drumline) Add(i int) {
 
 // Add starts tracking a new goroutine in the Drumline
 func (dl *Drumline) AddScale(i int, scale int64) {
+  if scale < 1 {
+    scale = 1 // Prevent divide by zero errors later, and I don't know what negative scale would mean.
+  }
   dl.lock.Lock()
   dl.channels[i] = make(chan struct{}, dl.buffer)
   dl.resets[i] = make(chan struct{})
